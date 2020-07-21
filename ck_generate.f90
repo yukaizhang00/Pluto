@@ -148,15 +148,15 @@ PROGRAM ck_calc
 
 
   INTEGER, PARAMETER ::                      &
-     t_num = 18,                             & ! Number of temperatures being calculated over in the spectral band
-     p_num = 26,                             & ! Number of pressures being calculated.
-     spectral_bands = 14,                    & ! Number of spectral bands (both IR and solar combined)
+     t_num = 8,                             & ! Number of temperatures being calculated over in the spectral band
+     p_num = 7,                             & ! Number of pressures being calculated.
+     spectral_bands = 2,                    & ! Number of spectral bands (both IR and solar combined)
      ! The maximum number of k-terms in any one band  12-9-08.  Trying 32 for Gauss-double quad.
      num_terms = 32,                         & 
-     max_num_gases = 3,                      & ! Maximum number of gases we'll ever use.
-     num_fixed_gases = 2,                    & ! The number of gases in the experiment that have a fixed mixing ratio
+     max_num_gases = 2,                      & ! Maximum number of gases we'll ever use.
+     num_fixed_gases = 1,                    & ! The number of gases in the experiment that have a fixed mixing ratio
      num_variable_gases = 1,                 & ! The number of gases in the experiment that have a variable mixing ratio
-     num_mix_ratio = 8,                      & ! Number of mixing ratios being calculated for a given spectral band 
+     num_mix_ratio = 7,                      & ! Number of mixing ratios being calculated for a given spectral band 
      num_hitran_gases = 36,                  & ! Number of HITRAN gases that are available (based upon hitran_gas_data)
      nS = 3000,                              & ! Number of wavenumbers in Baranov data set
      nT = 9,                                 & ! Number of temperatures in Baranov data set
@@ -174,9 +174,9 @@ PROGRAM ck_calc
 
   ! This derived data type contains all the raw data information from the HITRAN database
   TYPE :: hitrandata                            
-     REAL*8, DIMENSION(80000,6) ::           &
+     REAL*8, allocatable, DIMENSION(:,:) ::           &
        rawdat1                                  ! The entire HITRAN database only has 63197 H2O lines and 62913 CO2 lines.
-     INTEGER, DIMENSION(80000)  ::           &
+     INTEGER, allocatable, DIMENSION(:)  ::           &
        rawdat2                                  ! This bound (80000) will ensure we are larger than anything we might get.
      INTEGER                    ::           &
        num_rawdat
@@ -247,6 +247,8 @@ PROGRAM ck_calc
      finish,                                 &
      failed_wvn
 
+  integer :: startSys, finishSys, rate
+
   !G added for specifying channel widths
   REAL*8 ::                                  &
      spec_full_width,                        &
@@ -280,10 +282,11 @@ PROGRAM ck_calc
      output_dir*80,                          & ! The absolute directory where the output files are going
      op_file*80,                             & ! The full filename, including suffix, of the output file
      op_margin_file*80,                      & ! The full filename, including suffix, of the margin output file
+     raw_file*80,                            & ! raw data filename
      gas_indices_names*80,                      & ! The gas indices names used in the output file name, from namelist
      mixratiolabel(num_mix_ratio)*8,         & ! A means of labeling the output files with mixing ratio amount
      wnlabel(spectral_bands+1)*7,            & ! A means of labeling the output files with wavelength value
-     temp_char*3,                            &
+     temp_char*2,                            &
      press_char*2,                           &
      form1*32,                               &
      temp_label*7,                           &
@@ -298,10 +301,35 @@ PROGRAM ck_calc
 
    !-----------------------------------------------------------------------------------------
    ! Read in a namelist from the kdm.nml file.
-   namelist /input/ gas_index, gas_indices_names, spec_index, fixed_gas_fixed_mixratio
+   namelist /input/ gas_index, gas_indices_names, spec_index, fixed_gas_fixed_mixratio, &
+        t_start_index, t_end_index, &
+        p_start_index, p_end_index, &
+        mix_ratio_start_index, mix_ratio_end_index
+        
+
+
+!c-mm  If you want to hardwire these values without a runscript, uncomment these lines and comment out the NAMELIST line
+  p_start_index = 5
+  p_end_index = 5
+  t_start_index = 3
+  t_end_index = 3
+  spec_index = 1
+  mix_ratio_start_index = 1
+  mix_ratio_end_index = 1
+
+
    open(10,file='kdm.nml')
    read(10,nml=input)
    close(10)
+
+  call system_clock(count_rate=rate) 
+   do i=1, max_num_gases
+      do j=1, 8
+         allocate(raw_data(i,j)%rawdat1(80000,6))
+         allocate(raw_data(i,j)%rawdat2(80000))
+      end do
+   end do
+
    !-----------------------------------------------------------------------------------------
 
   DATA number_of_isotopes / 4, 8, 5, 5, 6, 3, 3, 3, 2, 1, 2, 1, 3, 1, 2, 2, 1, 2,  &
@@ -320,27 +348,23 @@ PROGRAM ck_calc
 !c-mm              398.0000, 631.0000, 1000.000, 1580.000, 2510.000, 3980.000, 6310.000, 10000.00, 15800.00, 25100.00, 39800.00, &
 !c-mm	      63100.00, 100000.0, 158000.0, 251000.0, 398000.0, 631000.0, 1000000. /     
 
-  DATA press/ 0.000100, 0.000251, 0.000631, 0.001580, 0.003980, 0.010000, &
-              0.025100, 0.063100, 0.158000, 0.398000, 1.000000,  &
-              2.510000, 6.310000, 15.80000, 39.80000, 100.0000, 251.0000, &
-              631.0000, 1580.000, 3980.000, 10000.00, 25100.00, &
-	      63100.00, 158000.0, 398000.0, 1000000. /     
+  DATA press/ 0.000100, 0.001000, 0.010000, 0.100000, 1.000000, 10.00000, &
+              100.0000 /     
 
   !G Can either specify spectral band edges or centers.  
   !G   + If edges, then there are spectral_bands+1 entries in wn and the bands WILL NOT overlap
   !G   + If centers, then one must also specify a band width.  There will be only spectral_bands entries in wn and the bands CAN overlap. 
 !c-mm  DATA wn/ 10.0D0, 166.667D0, 416.667D0, 625.370D0, 710.020D0, 833.333D0, 1250.0D0, &
 !c-mm           2222.22D0, 3087.37D0, 4030.63D0, 5370.57D0, 7651.11D0, 12500.0D0, 25000.0D0, 41666.67D0 /
-  DATA wn/ 10.0D0, 166.667D0, 416.667D0, 625.370D0, 710.020D0, 833.333D0, 1250.0D0, &
-           2222.22D0, 3014.00D0, 3020.00D0, 5370.57D0, 7651.11D0, 12500.0D0, 25000.0D0, 41666.67D0 /
+  DATA wn/ 10.0D0, 166.667D0, 300.00D0/
 
 !c-mm  DATA variable_gas_mixratio/ 0.0D0, 1.0D-7, 1.0D-6, 1.0D-5, 1.0D-4, 1.0D-3, 1.0D-2, 1.0D-1 /
-  DATA variable_gas_mixratio/ 1.0D-25, 1.0D-7, 1.0D-6, 1.0D-5, 1.0D-4, 1.0D-3, 1.0D-2, 1.0D-1 /
+  DATA variable_gas_mixratio/ 1.0D-4, 1.0D-3, 5.0D-3, 1.0D-2, 5.0D-2, 1.0D-1, 5.0D-1/
   !G here we are only using zero water
   !c-mm  DATA variable_gas_mixratio/ 0.0D-7, 0.0D-6, 0.0D-5, 0.0D-4, 0.0D-3, 0.0D-2 /
 
 !c-mm  DATA mixratiolabel/ '0.00D-07', '1.00D-07', '1.00D-06', '1.00D-05', '1.00D-04', '1.00D-03', '1.00D-02', '1.00D-01' /
-  DATA mixratiolabel/ '1.00D-25', '1.00D-07', '1.00D-06', '1.00D-05', '1.00D-04', '1.00D-03', '1.00D-02', '1.00D-01' /
+  DATA mixratiolabel/ '1.00D-4', '1.00D-3', '5.00D-3', '1.00D-2', '5.0D-2', '1.0D-1', '5.0D-1' /
   !G here we are only using zero water
   !c-mm  DATA mixratiolabel/ '0.00D-07', '0.00D-06', '0.00D-05', '0.00D-04', '0.00D-03', '0.00D-02' /
 
@@ -365,15 +389,6 @@ PROGRAM ck_calc
   spec_full_width = 10.58D0    ! width in cm^-1
   spec_half_width = spec_full_width / 2.0D0
 
-!c-mm  If you want to hardwire these values without a runscript, uncomment these lines and comment out the NAMELIST line
-  p_start_index = 1
-  p_end_index = 26
-  t_start_index = 1
-  t_end_index = 18
-!c-Soto  spec_index = 9
-  mix_ratio_start_index = 1
-  mix_ratio_end_index = 8
-
 !c-mm  NAMELIST/indata/p_start_index,p_end_index,t_start_index,t_end_index,spec_index,mix_ratio_start_index,mix_ratio_end_index
 !c-mm  READ(5,indata)
 
@@ -381,7 +396,7 @@ PROGRAM ck_calc
   length_count=LEN_TRIM(output_dir)
 
   !G prepare for formatting below -- fill out strings with numbers (Fortran's equivalent of num2str)
-  WRITE(temp_char,'(I3)') t_num
+  WRITE(temp_char,'(I2)') t_num
   form1='('//TRIM(temp_char)//'e14.7)'  ! This generates a format statement of 71e14.7 (for t_num=71)
   WRITE(zero_pad,'(I1)') 0
 
@@ -520,6 +535,7 @@ PROGRAM ck_calc
               hit_data_file=TRIM(ADJUSTL(hit_data_dir))//TRIM(ADJUSTL(gas_label))//'_hit08.par'
            ENDIF
            write(0,*) 'filename= ',hit_data_file
+           print*,'wowo', hit_data_file !yukai
            OPEN(UNIT=10,FILE=hit_data_file)
            SELECT CASE (gas_index(x))                                                    ! Water and methane have different margin than other gases
               CASE(1)
@@ -574,6 +590,7 @@ PROGRAM ck_calc
               vstep = (range_max-range_min)
               !c-mm At this point, we know exactly how many lines, so we can allocate exact space to line_dat.  Last 8 is for the 8 CO2 isotopes
               ALLOCATE(line_dat(4,MAXVAL(raw_data%num_rawdat),num_gases,8))
+
 
               !c-mm  This block calculates all the line data for all the gases in the atmosphere and determines the narrowest line from which we
               !c-mm     can establish the stepping in wavenumber space.
@@ -631,17 +648,14 @@ PROGRAM ck_calc
                        kvals_single_gas=1.D-25                                                    ! Start fresh for each gas/continuum
                        IF (raw_data(x,y)%num_rawdat > 0) THEN
                           CALL cpu_time(start)
-                          !c-mm Two separate routines to generating the absorption coefficients.  Both yield basically the same results, although I
-                          !c-mm    think the humlik routine is slightly faster.  You can use either one.
-!                          CALL abs_coeff_calc(line_dat=line_dat(:,:,x,y), range_min=range_min, range_max=range_max,      & 
-!                                              gas=gas_index(x), kvals=kvals_single_gas,vstep=vstep,                      &
-!                                              numvals=numvals, numlines=raw_data(x,y)%num_rawdat,temp=temp,maxwid=margin(x), &
-!                                              too_long=too_long,failed_wvn=failed_wvn)
+                          call system_clock(startSys)
+
                           CALL humlik(line_dat=line_dat(:,:,x,y), range_min=range_min, range_max=range_max,              & 
                                               gas=gas_index(x), kvals=kvals_single_gas,vstep=vstep,                      &
                                               numvals=numvals, numlines=raw_data(x,y)%num_rawdat,temp=temp,maxwid=margin(x), &
                                               too_long=too_long,failed_wvn=failed_wvn,kval_dim=kval_dim)
                           CALL cpu_time(finish)
+                          CALL system_clock(finishSys)
                           WRITE((20+jj-1)*10,'(a3,f5.1,a9,f5.1,a13,f7.1,a2)') 't= ',temp,' margin= ',margin(x)/100.,' cm-1, time= ',finish-start,' s'
                           CALL flush((20+jj-1)*10)
                           !c-mm  The variable too_long will become true inside abs_coeff_calc/humlik if the cpu_time exceeds some threshold.  It will dump out
@@ -761,6 +775,13 @@ PROGRAM ck_calc
               margin_for_new_pressure=.FALSE.
               DEALLOCATE(line_dat)
               DEALLOCATE(kvals_single_gas)
+
+              !write the raw data to file
+              raw_file = output_dir(1:length_count)//TRIM(gas_indices_names)//'.'//mixratiolabel(jj)//'.'//TRIM(wnlabel(kk))//'_t'//temp_char//'_p'//press_char//'.raw'
+              open(unit=(60+jj-1),file=raw_file)
+              write(60+jj-1,*) kvals
+              close(60+jj-1)
+              !
               !c-mm  Here's where we call the binning and sorting routines
               IF (anylines) THEN							  ! If there are no gases of interest in
                  numvals=MIN(numvals,kval_dim)
@@ -865,9 +886,9 @@ SUBROUTINE abs_line_data(line_dat, pratio, temp, raw_data, q_coef, q_ref, iso_ma
   IMPLICIT NONE
 
   TYPE :: hitrandata_onegas
-     REAL*8, DIMENSION(80000,6) ::    &
+     REAL*8, allocatable, DIMENSION(:,:) ::    &
        rawdat1
-     INTEGER, DIMENSION(80000)  ::    &
+     INTEGER, allocatable, DIMENSION(:)  ::    &
        rawdat2
      INTEGER                    ::    &
        num_rawdat
@@ -2362,6 +2383,7 @@ SUBROUTINE humlik(line_dat, range_min, range_max, gas, kvals, vstep, numvals, nu
   calc: DO       
       if (100*(vee-range_min)/(range_max-range_min) > perc_threshold) THEN
           write(*,'(A,I3,A)') "humlik: ",perc_threshold,"% complete"
+          call flush()
           perc_threshold = perc_threshold + 10
        endif
                                                  ! Now the calculation of absorption coefficients begins.
